@@ -10,6 +10,16 @@ df = pd.read_csv('smartphones_clean.csv')
 kriteria = ['price', 'rating', 'processor_speed', 'ram_gb', 'storage_gb', 'camera_mp', 'battery_mah']
 df_spk = df[['model'] + kriteria].copy()
 
+nama_kriteria = [
+            "Harga",
+            "Rating",
+            "Prosesor",
+            "RAM",
+            "Storage",
+            "Kamera",
+            "Baterai"
+        ]
+
 # Data Preprocessing: Mengisi nilai kosong (NaN) dengan median dan mengatasi nilai 0/negatif
 for col in kriteria:
     df_spk[col] = df_spk[col].fillna(df_spk[col].median())
@@ -94,6 +104,8 @@ hasil_df = pd.DataFrame({
         
 sort_ranking = hasil_df.sort_values(by='Vektor V', ascending=False).reset_index(drop=True)
 
+pemenang_wp = sort_ranking.iloc[0]["Model"]
+
 
 st.sidebar.subheader("Bobot Ternormalisasi")
 st.sidebar.caption("Normalisasi bobot dilakukan agar total seluruh bobot bernilai 1.")
@@ -169,7 +181,7 @@ match pilihan:
         """)
 
         jenis_df = pd.DataFrame({
-            "Kriteria": kriteria,
+            "Kriteria": nama_kriteria,
             "Jenis": ["Cost", "Benefit", "Benefit", "Benefit", "Benefit", "Benefit", "Benefit"]
         })
 
@@ -246,10 +258,10 @@ match pilihan:
         st.header("Hasil Perhitungan WP")
         
         st.subheader("Matriks Keputusan Awal (Top 5 baris)")
-        st.dataframe(pd.DataFrame(data[:5], index=alternatif[:5], columns=kriteria))
+        st.dataframe(pd.DataFrame(data[:5], index=alternatif[:5], columns=nama_kriteria))
         
         bobot_df = pd.DataFrame({
-            "Kriteria" : kriteria,
+            "Kriteria" : nama_kriteria,
             "Bobot Awal" : bobot_awal,
             "Bobot Ternormalisasi" : norm_bobot
         })
@@ -259,7 +271,6 @@ match pilihan:
         st.subheader("\nHasil Ranking (Top 10)")
         st.dataframe(sort_ranking.head(10), use_container_width=True, hide_index=True)
         
-        pemenang_wp = sort_ranking.iloc[0]["Model"]
         skor_wp = sort_ranking.iloc[0]["Vektor V"]
         st.success(f" **Kesimpulan WP:** ✧｡◝(ᵔᗜᵔ)◜✧*｡\n\nBerdasarkan metode WP, rekomendasi utama adalah **{pemenang_wp}** dengan nilai **{skor_wp:.4f}**")
         
@@ -271,17 +282,24 @@ match pilihan:
         st.header("Visualisasi Data")
         st.subheader("Grafik Bobot Kriteria")
         
-        fig, ax = plt.subplots(figsize=(8, 5))
+        st.subheader("1. Proporsi Bobot Kriteria (Pie Chart)")
+        fig1, ax1 = plt.subplots(figsize=(8, 5))
         
-        ax.bar(kriteria, norm_bobot)
+        warna1 = [
+            '#EF4444',  # Harga
+            '#F97316',  # Rating
+            '#EAB308',  # Prosesor
+            '#22C55E',  # RAM
+            '#06B6D4',  # Storage
+            '#3B82F6',  # Kamera
+            '#8B5CF6'   # Baterai
+        ]
         
-        ax.set_xlabel("Kriteria")
-        ax.set_ylabel("Bobot")
-        ax.set_title("Bobot Kriteria Weighted Product")
-        
-        plt.xticks(rotation=30)
-        
-        st.pyplot(fig)
+        # Menggunakan autopct untuk menampilkan persentase
+        ax1.pie(norm_bobot, labels=nama_kriteria, autopct='%1.1f%%', startangle=140, colors=warna1)
+        ax1.axis('equal') # Memastikan pie chart berbentuk lingkaran sempurna
+        ax1.set_title("Persentase Bobot Setiap Kriteria")
+        st.pyplot(fig1)
         
         st.subheader("Grafik Ranking Smartphone")
         
@@ -298,5 +316,31 @@ match pilihan:
         plt.xticks(rotation=90)
         
         st.pyplot(fig2)
+        
+        data_pemenang = df_spk[df_spk['model'] == pemenang_wp].iloc[0]
+        
+        st.subheader(f"Profil Kriteria Pemenang: {pemenang_wp}")
+
+        kriteria_pemenang = [
+            data_pemenang['price'] ** (-w_harga),      # cost
+        data_pemenang['rating'] ** w_rating,
+        data_pemenang['processor_speed'] ** w_prosesor,
+        data_pemenang['ram_gb'] ** w_ram,
+        data_pemenang['storage_gb'] ** w_storage,
+        data_pemenang['camera_mp'] ** w_kamera,
+        data_pemenang['battery_mah'] ** w_baterai
+        ]
+        
+        fig, ax = plt.subplots(figsize=(10,5))
+
+        ax.barh(nama_kriteria, kriteria_pemenang)
+
+        ax.set_title(f"Nilai Kriteria Smartphone Pemenang\n{pemenang_wp}")
+        ax.set_xlabel("Nilai")
+
+        for i, v in enumerate(kriteria_pemenang):
+            ax.text(v, i, str(v), va='center')
+
+        st.pyplot(fig)
         
         st.caption("Sistem Pendukung Keputusan Pemilihan Smartphone dengan Metode Weighted Product")
