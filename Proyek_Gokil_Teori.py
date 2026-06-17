@@ -6,6 +6,11 @@ from skfuzzy import control as ctrl
 import matplotlib.pyplot as plt
 import time
 import itertools
+import logging
+
+# Konfigurasi logging
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
 st.set_page_config(
     page_title="SPK Pemilihan Smartphone - Fuzzy Mamdani",
@@ -17,9 +22,8 @@ st.set_page_config(
 # ==========================================
 # INISIALISASI SESSION STATE
 # ==========================================
-# Parameter batas 'Sedang' / 'Tengah' untuk masing-masing kriteria
-if "param_harga" not in st.session_state:
-    st.session_state.param_harga = 50.0
+if "param_keterjangkauan" not in st.session_state:
+    st.session_state.param_keterjangkauan = 50.0
 if "param_ram" not in st.session_state:
     st.session_state.param_ram = 50.0
 if "param_storage" not in st.session_state:
@@ -41,15 +45,12 @@ if "df_data" not in st.session_state:
 # FUNGSI CACHE UNTUK LOAD DATA
 # ==========================================
 @st.cache_data
-def load_data(uploaded_file=None):
+def load_data():
+    """Memuat dataset smartphone dari file CSV"""
     try:
-        if uploaded_file is not None:
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_csv("smartphones_clean.csv")
-
+        df = pd.read_csv("smartphones_clean.csv")
+        
         # Pre-processing: Normalisasi data menjadi persentil (0-100)
-        # Agar mudah diproses di mesin fuzzy yang rentangnya 0-100
         df_spk = df.copy()
         
         # Benefit: Makin besar nilai asli, persentil makin mendekati 100
@@ -57,27 +58,31 @@ def load_data(uploaded_file=None):
         df_spk['Storage_pct'] = df_spk['storage_gb'].rank(pct=True) * 100
         df_spk['Baterai_pct'] = df_spk['battery_mah'].rank(pct=True) * 100
         
-        # Cost: Makin MURA (kecil) harga asli, persentil makin mendekati 100 (Keterjangkauan Tinggi)
-        df_spk['Harga_pct'] = (1 - df_spk['price'].rank(pct=True)) * 100
+        # Cost: Makin MURAH harga, persentil makin mendekati 100 (Keterjangkauan Tinggi)
+        df_spk['Keterjangkauan_pct'] = (1 - df_spk['price'].rank(pct=True)) * 100
         
         return df_spk
 
     except FileNotFoundError:
+        logger.error("File smartphones_clean.csv tidak ditemukan")
         return None
     except Exception as e:
-        st.warning(f"Terjadi error: {e}")
+        logger.error(f"Error loading data: {e}")
         return None
 
 
 # ==========================================
-# FUNGSI PEMBUAT SISTEM FUZZY
+# FUNGSI CACHE UNTUK SISTEM FUZZY
 # ==========================================
-def fuzzy_system(p_harga, p_ram, p_stor, p_bat, defuzz_method):
-
+@st.cache_resource
+def create_fuzzy_system(p_keterjangkauan, p_ram, p_stor, p_bat, defuzz_method):
+    """
+    Membuat dan meng-cache sistem fuzzy untuk menghindari rebuild berulang
+    """
     # 1. Deklarasi Variabel Antecedent (0-100 Persentil)
     x_range = np.arange(0, 101, 1)
     
-    harga = ctrl.Antecedent(x_range, "harga")
+    keterjangkauan = ctrl.Antecedent(x_range, "keterjangkauan")
     ram = ctrl.Antecedent(x_range, "ram")
     storage = ctrl.Antecedent(x_range, "storage")
     baterai = ctrl.Antecedent(x_range, "baterai")
@@ -88,23 +93,23 @@ def fuzzy_system(p_harga, p_ram, p_stor, p_bat, defuzz_method):
 
     # 2. Fungsi Keanggotaan (Otomatis menyesuaikan parameter slider)
     def create_mf(antecedent, param):
-        b, a = max(0, param - 25), min(100, param + 25)
+        lower, upper = max(0, param - 25), min(100, param + 25)
         antecedent['rendah'] = fuzz.trimf(x_range, [0, 0, param])
-        antecedent['sedang'] = fuzz.trimf(x_range, [b, param, a])
+        antecedent['sedang'] = fuzz.trimf(x_range, [lower, param, upper])
         antecedent['tinggi'] = fuzz.trimf(x_range, [param, 100, 100])
 
-    create_mf(harga, p_harga)
+    create_mf(keterjangkauan, p_keterjangkauan)
     create_mf(ram, p_ram)
     create_mf(storage, p_stor)
     create_mf(baterai, p_bat)
 
-    # Output Rekomendasi
-    score["buruk"] = fuzz.trapmf(score.universe, [0, 0, 30, 45])
-    score["cukup"] = fuzz.trimf(score.universe, [35, 50, 65])
+    # Output Rekomendasi - Disesuaikan untuk distribusi yang lebih baik
+    score["buruk"] = fuzz.trapmf(score.universe, [0, 0, 25, 40])
+    score["cukup"] = fuzz.trimf(score.universe, [30, 50, 70])
     score["baik"] = fuzz.trimf(score.universe, [55, 75, 90])
-    score["sangat_baik"] = fuzz.trapmf(score.universe, [80, 90, 100, 100])
+    score["sangat_baik"] = fuzz.trapmf(score.universe, [80, 92, 100, 100])
 
-    # 3. Rule Generation (81 Aturan Otomatis Menggunakan Itertools)
+    # 3. Rule Generation (81 Aturan Otomatis)
     rules = []
     terms = ['rendah', 'sedang', 'tinggi']
     score_map = {'rendah': 1, 'sedang': 2, 'tinggi': 3}
@@ -112,18 +117,18 @@ def fuzzy_system(p_harga, p_ram, p_stor, p_bat, defuzz_method):
     for h, r, s, b in itertools.product(terms, repeat=4):
         total_score = score_map[h] + score_map[r] + score_map[s] + score_map[b]
         
-        # Logika pembagian kuadran output
+        # Logika pembagian kuadran output yang lebih baik
         if total_score <= 5:
             out = 'buruk'
-        elif total_score <= 8:
+        elif total_score <= 7:
             out = 'cukup'
-        elif total_score <= 10:
+        elif total_score <= 9:
             out = 'baik'
         else:
             out = 'sangat_baik'
             
         rule = ctrl.Rule(
-            harga[h] & ram[r] & storage[s] & baterai[b],
+            keterjangkauan[h] & ram[r] & storage[s] & baterai[b],
             score[out]
         )
         rules.append(rule)
@@ -131,18 +136,19 @@ def fuzzy_system(p_harga, p_ram, p_stor, p_bat, defuzz_method):
     hp_ctrl = ctrl.ControlSystem(rules)
     hp_sim = ctrl.ControlSystemSimulation(hp_ctrl)
     
-    return hp_sim, harga, ram, storage, baterai, score
+    return hp_sim, keterjangkauan, ram, storage, baterai, score
 
 
 # ==========================================
 # FUNGSI HELPER
 # ==========================================
 def tingkat_rekomendasi(crisp_val):
-    if crisp_val <= 35:
+    """Menentukan status rekomendasi berdasarkan skor crisp"""
+    if crisp_val <= 30:
         return "Buruk"
-    elif crisp_val <= 60:
+    elif crisp_val <= 55:
         return "Cukup"
-    elif crisp_val <= 85:
+    elif crisp_val <= 80:
         return "Baik"
     else:
         return "Sangat Baik"
@@ -176,7 +182,7 @@ if menu == "📊 Dataset":
 
     if df is not None:
         st.subheader("Dataset (Data Mentah & Kolom Normalisasi)")
-        st.dataframe(df.head(100), use_container_width=True) # Tampilkan 100 baris agar tidak lag
+        st.dataframe(df.head(100), use_container_width=True)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -188,7 +194,7 @@ if menu == "📊 Dataset":
             df_mahal = df.sort_values(by='price', ascending=False).head(10)
             st.bar_chart(data=df_mahal, x='model', y='price')
     else:
-        st.error("Dataset tidak ditemukan. Silakan upload file CSV.")
+        st.error("Dataset tidak ditemukan. Pastikan file 'smartphones_clean.csv' tersedia.")
 
 # ==========================================
 # HALAMAN 2: KONFIGURASI FUZZY
@@ -202,8 +208,8 @@ elif menu == "⚙️ Konfigurasi Fuzzy":
     col_w1, col_w2 = st.columns(2)
 
     with col_w1:
-        st.session_state.param_harga = st.slider(
-            "Batas Keterjangkauan Harga", 30.0, 70.0, st.session_state.param_harga, step=1.0
+        st.session_state.param_keterjangkauan = st.slider(
+            "Batas Keterjangkauan Harga", 30.0, 70.0, st.session_state.param_keterjangkauan, step=1.0
         )
         st.session_state.param_ram = st.slider(
             "Batas Kapasitas RAM", 30.0, 70.0, st.session_state.param_ram, step=1.0
@@ -232,9 +238,9 @@ elif menu == "⚙️ Konfigurasi Fuzzy":
 
     st.markdown("---")
 
-    # Generate Simulasi Sementar untuk Grafik
-    sim, harga, ram, storage, baterai, score = fuzzy_system(
-        st.session_state.param_harga, st.session_state.param_ram, 
+    # Generate Simulasi dengan cache
+    sim, keterjangkauan, ram, storage, baterai, score = create_fuzzy_system(
+        st.session_state.param_keterjangkauan, st.session_state.param_ram, 
         st.session_state.param_storage, st.session_state.param_baterai, 
         st.session_state.defuzz_method
     )
@@ -246,26 +252,24 @@ elif menu == "⚙️ Konfigurasi Fuzzy":
     )
 
     plt.close("all")
-
-    if viz_option == "Keterjangkauan Harga":
-        harga.view()
-        plt.title("Fungsi Keanggotaan: Harga")
-    elif viz_option == "Kapasitas RAM":
-        ram.view()
-        plt.title("Fungsi Keanggotaan: RAM")
-    elif viz_option == "Kapasitas Storage":
-        storage.view()
-        plt.title("Fungsi Keanggotaan: Storage")
-    elif viz_option == "Kapasitas Baterai":
-        baterai.view()
-        plt.title("Fungsi Keanggotaan: Baterai")
-    elif viz_option == "Output Skor Rekomendasi":
-        score.view()
-        plt.title("Fungsi Keanggotaan: Skor Kelayakan (Output)")
-
-    fig = plt.gcf()
-    fig.set_size_inches(10, 4)
-    st.pyplot(fig)
+    
+    # Dictionary lookup untuk visualisasi
+    viz_map = {
+        "Keterjangkauan Harga": (keterjangkauan, "Fungsi Keanggotaan: Keterjangkauan Harga"),
+        "Kapasitas RAM": (ram, "Fungsi Keanggotaan: RAM"),
+        "Kapasitas Storage": (storage, "Fungsi Keanggotaan: Storage"),
+        "Kapasitas Baterai": (baterai, "Fungsi Keanggotaan: Baterai"),
+        "Output Skor Rekomendasi": (score, "Fungsi Keanggotaan: Skor Kelayakan (Output)")
+    }
+    
+    if viz_option in viz_map:
+        var, title = viz_map[viz_option]
+        var.view()
+        plt.title(title)
+        
+        fig = plt.gcf()
+        fig.set_size_inches(10, 4)
+        st.pyplot(fig)
 
 # ==========================================
 # HALAMAN 3: HITUNG & PERINGKAT SPK
@@ -276,16 +280,16 @@ elif menu == "🏆 Hitung & Peringkat SPK":
     df = st.session_state.df_data
 
     if df is None:
-        st.warning("Dataset belum diload! Silakan ke halaman 'Dataset' dan Upload file CSV terlebih dahulu.")
+        st.warning("Dataset belum diload! Silakan ke halaman 'Dataset' terlebih dahulu.")
     else:
         if st.button("🚀 Hitung Peringkat Fuzzy", use_container_width=True, type="primary"):
             t_mulai = time.time()
 
             data_rows = df.to_dict("records")
 
-            # Bikin Master Control dari session state
-            master_sim, _, _, _, _, _ = fuzzy_system(
-                st.session_state.param_harga,
+            # Bikin Master Control dari session state dengan cache
+            master_sim, _, _, _, _, _ = create_fuzzy_system(
+                st.session_state.param_keterjangkauan,
                 st.session_state.param_ram,
                 st.session_state.param_storage,
                 st.session_state.param_baterai,
@@ -303,7 +307,7 @@ elif menu == "🏆 Hitung & Peringkat SPK":
                 sim = ctrl.ControlSystemSimulation(master_ctrl)
 
                 # Masukkan nilai yang sudah dinormalisasi persentil (0-100)
-                sim.input["harga"] = row["Harga_pct"]
+                sim.input["keterjangkauan"] = row["Keterjangkauan_pct"]
                 sim.input["ram"] = row["RAM_pct"]
                 sim.input["storage"] = row["Storage_pct"]
                 sim.input["baterai"] = row["Baterai_pct"]
@@ -311,7 +315,8 @@ elif menu == "🏆 Hitung & Peringkat SPK":
                 try:
                     sim.compute()
                     skor_hasil.append(sim.output["score"])
-                except:
+                except Exception as e:
+                    logger.error(f"Error computing score for row {i}: {e}")
                     skor_hasil.append(0.0)
 
                 if i % 50 == 0 or i == total_data - 1:
@@ -373,7 +378,7 @@ elif menu == "👥 Tentang Program":
 
     st.markdown("### Informasi Sistem")
     st.write("- **Tujuan:** Menentukan smartphone terbaik menggunakan metode Fuzzy Inference System (Mamdani)")
-    st.write("- **Kriteria Penilaian:** Harga, RAM, Storage, dan Baterai.")
+    st.write("- **Kriteria Penilaian:** Keterjangkauan Harga, RAM, Storage, dan Baterai.")
     st.write("- **Pre-processing:** Menggunakan teknik *Percentile Normalization* untuk menyamakan satuan kriteria menjadi skala (0-100).")
     st.write("- **Rule Base:** Otomatis di-generate menggunakan modul `itertools` (kombinasi Rendah, Sedang, Tinggi menghasilkan 81 Aturan logika).")
 
